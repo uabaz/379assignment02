@@ -1,0 +1,406 @@
+<html><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>CMPUT379 - Message Passing</title>
+<style>
+    table, th, td { border: 1px solid black; }
+    div.monospace { width:100%; margin: left;
+    	     font-family: "Courier New", Courier, monospace }
+    div.arial { width:50%; margin: left;
+    	     font-family: Arial, Helvetica, sans-serif}
+    div.default { width:50%; margin: left; }
+	     
+</style>
+</head>
+
+<body><div class="monospace">
+<h2>CMPUT 379: Experiments with sending and receiving formatted messages</h2>
+
+<!--  --------------------------------------------- -->
+<h3>1. Introduction</h3>
+<ul>
+<li> Exchanging messages is a fundamental task in the operation of any
+     client-server or peer-to-peer application.
+     The application may use any form of IPC (inter-process communication)
+     to pass the messages (e.g., pipes, FIFOs, UDP sockets, TCP sockets, etc.).
+     <br><br>     
+
+</li><li> Typically, there is a handful of message types that need to be
+     exchanged. Each type has a name that reflects either the carried
+     data, or the purpose of messages of this type.
+     The collection of such message types, and the way they are being
+     used by the application form an application layer protocol.
+     <br><br>
+       
+</li><li> To enable the exchange of different types of messages, the developer
+     may be able to choose between encoding a message's content as variable
+     length text lines where each line is terminated with a newline character,
+     or fixed length binary messages that may carry text strings and
+     binary data.
+
+     <p>
+     Each method has its pros and cons.
+     Among the disadvantages of converting a message that carries many
+     numeric data fields to a text string is the effort required to
+     encode and decode such messages, and the possible loss of accuracy
+     when converting real numbers to strings.
+     In such cases, a better approach is to preserve the original structure
+     of the message by sending and receiving it in a binary form.
+
+     This lab activity develops this direction further. 
+</p></li></ul>     
+<!--  --------------------------------------------- -->
+<h3>2. A Running Example</h3>
+
+<ul>
+<li>   We use, as a running example, the development of a client-server
+       application that relies on exchanging 5 types of messages that
+       have the following names and roles:
+       <ul>
+       <li> <b>STR</b>: each message of this type carries 3 strings
+       </li><li> <b>INT</b>: each message of this type carries 3 integers
+       </li><li> <b>FLOAT</b>: each message of this type carries 3 floating
+       	    numbers
+       </li><li> <b>ACK</b>: a server ACKs every received message from a client
+       </li><li> <b>DONE</b>: a client sends to the server a DONE message before
+       	    exiting
+       </li></ul>
+</li></ul>
+
+<!--  --------------------------------------------- -->
+<h3>3. Messages and Frames</h3>
+
+<ul>
+<li>  It is convenient to carry each message within a frame that has extra
+      information.
+      In our design here, each frame is a pair: <b>[kind, msg]</b>
+      where
+      <ul>
+      <li>  <b>kind</b> is an integer that indicates the carried
+      	    message type, and
+      </li><li>  <b>msg</b> is a struct or union that carries the message's data.
+      	    Recall that in the ANSI standard, a struct (or union) can be
+	    assigned to, passed to a function, and returned by a function.
+      </li></ul>
+      <br><br>
+      
+</li><li>  The following is a possible program fragment that implements
+      the above ideas. The fragment defines <b>MSG</b> as a <b>union</b>
+      to save space since each message stores either strings, integers,
+      or floats.
+      <pre>      <strong>
+      <font color="blue">
+#include  ...    // stdio.h, stdlib.h, unistd.h, stdarg.h, string.h,
+	  	 // assert.h, sys/types.h, sys/stat.h, fcntl.h
+		     
+#define MAXLINE   132
+#define MAXWORD    32
+
+#define NF 3		 // number of fields in each message
+
+#define MSG_KINDS 5
+typedef enum { STR, INT, FLOAT, DONE, ACK } KIND;	  // Message kinds
+char KINDNAME[][MAXWORD]= { "STR", "INT", "FLOAT", "DONE", "ACK" };
+
+typedef struct { char  d[NF][MAXLINE]; } MSG_STR;
+typedef struct { int   d[NF]; }          MSG_INT;
+typedef struct { float d[NF]; }          MSG_FLOAT;
+
+typedef union { MSG_STR  mStr; MSG_INT mInt; MSG_FLOAT mFloat; } MSG;
+
+typedef struct { KIND kind; MSG msg; } FRAME;
+       </font></strong></pre>
+</li></ul>
+<!--  --------------------------------------------- -->
+<h3>4. Error Handling</h3>
+
+<ul>
+<li>  We'll use the WARNING and FATAL functions, due to the authors of
+      the AWK Programming Language, for reporting warnings and errors.
+      <pre>      <strong>
+      <font color="blue">
+// ------------------------------
+// The WARNING and FATAL functions are due to the authors of
+// the AWK Programming Language.
+
+void FATAL (const char *fmt, ... )
+{
+    va_list  ap;
+    fflush (stdout);
+    va_start (ap, fmt);  vfprintf (stderr, fmt, ap);  va_end(ap);
+    fflush (NULL);
+    exit(1);
+}
+
+void WARNING (const char *fmt, ... )
+{
+    va_list  ap;
+    fflush (stdout);
+    va_start (ap, fmt);  vfprintf (stderr, fmt, ap);  va_end(ap);
+}
+// ------------------------------
+       </font></strong></pre>
+</li></ul>
+
+<!--  --------------------------------------------- -->
+<h3>5. Sending Frames</h3>
+<ul>
+<li>  It is convenient to be able to send a frame using a simple
+      sequence like:
+       <br>
+       <blockquote>
+       <font color="blue">
+       MSG  msg; <br>
+       msg=  composeMessage ( ... some data ...);  <br>
+       sendFrame (destination, message kind, message's content);
+       </font>
+       </blockquote>
+
+</li><li>  In our application, however, we need to handle compositions of three
+      different types of messages. This can be done using three functions,
+      e.g.,
+      <pre>      <strong>
+      <font color="blue">
+// ------------------------------
+MSG composeMSTR (const char *a, const char *b, const char *c)
+{
+    MSG  msg;
+
+    memset( (char *) &amp;msg, 0, sizeof(msg) );
+    strcpy(msg.mStr.d[0],a);
+    strcpy(msg.mStr.d[1],b);
+    strcpy(msg.mStr.d[2],c);
+    return msg;
+}    
+// ------------------------------    
+MSG composeMINT (int a, int b, int c)
+{
+    MSG  msg;
+
+    memset( (char *) &amp;msg, 0, sizeof(msg) );
+    msg.mInt.d[0]= a; msg.mInt.d[1]= b; msg.mInt.d[2]= c;
+    return msg;
+}    
+// ------------------------------
+MSG  composeMFLOAT (float a, float b, float c)
+{
+    MSG  msg;
+
+    memset( (char *) &amp;msg, 0, sizeof(msg) );
+    msg.mFloat.d[0]= a; msg.mFloat.d[1]= b; msg.mFloat.d[2]= c;
+    return msg;
+}
+// ------------------------------
+       </font></strong></pre>       
+
+
+</li><li>  Now, sending a frame over a channel connected to a file descriptor
+      <b>fd</b> can be written as:
+      <pre>      <strong>
+      <font color="blue">
+void sendFrame (int fd, KIND kind, MSG *msg)
+{
+    FRAME  frame;
+
+    assert (fd &gt;= 0);
+    memset( (char *) &amp;frame, 0, sizeof(frame) );
+    frame.kind= kind;
+    frame.msg=  *msg;
+    write (fd, (char *) &amp;frame, sizeof(frame));
+}
+       </font></strong></pre>       
+</li></ul>
+
+<!--  --------------------------------------------- -->
+<h3>6. Receiving Frames</h3>
+<ul>
+<li>  Likewise, it is also convenient to be able to receive a frame
+      from a file descriptor <b>fd</b> by calling a suitable function, e.g.,
+      <pre>      <strong>
+      <font color="blue">
+FRAME rcvFrame (int fd)
+{
+    int    len; 
+    FRAME  frame;
+
+    assert (fd &gt;= 0);
+    memset( (char *) &amp;frame, 0, sizeof(frame) );
+    len= read (fd, (char *) &amp;frame, sizeof(frame));
+    if (len != sizeof(frame))
+        WARNING ("Received frame has length= %d (expected= %d)\n",
+		  len, sizeof(frame));
+    return frame;		  
+}
+       </font></strong></pre>       
+</li></ul>
+<!--  --------------------------------------------- -->
+<h3>7. Printing Frames</h3>
+<ul>
+<li>  Printing incoming and outgoing frames occurs extensively in
+      client-server and peer-to-peer applications either because we want
+      to monitor the progress of each process, or debug the programs during
+      development or testing.
+      Thus, it saves lots of time and effort to carefully design a single
+      function that can print any frame type used in an application.
+      <pre>      <strong>
+      <font color="blue">
+// ------------------------------
+void printFrame (const char *prefix, FRAME *frame)
+{
+    MSG  msg= frame-&gt;msg;
+    
+    printf ("%s [%s] ", prefix, KINDNAME[frame-&gt;kind]);
+    switch (frame-&gt;kind) {
+    case STR:
+        printf ("'%s' '%s' '%s'",
+	   	 msg.mStr.d[0], msg.mStr.d[1], msg.mStr.d[2]);
+        break;
+     case INT:
+         printf ("%d, %d, %d",
+	   	  msg.mInt.d[0], msg.mInt.d[1], msg.mInt.d[2]);
+         break;
+      case FLOAT:
+          printf ("%f, %f, %f",
+	   	   msg.mFloat.d[0], msg.mFloat.d[1], msg.mFloat.d[2]);
+          break;		   
+      case ACK: case DONE:
+          break;
+      default:
+          WARNING ("Unknown frame type (%d)\n", frame-&gt;kind);
+	  break;
+      }
+      printf("\n");
+}
+// ------------------------------
+       </font></strong></pre>
+
+
+</li></ul>
+<!--  --------------------------------------------- -->
+<h3>8. The Client Loop</h3>
+<ul>
+<li>  To test the above framework, one can write a client that sends
+      three different message types, and waits for receiving an
+      <b>ACK</b> before sending a new message.
+      This can be done as follows:
+      <pre>      <strong>
+      <font color="blue">
+void do_client (int fifoCS, int fifoSC)
+{
+    FRAME  frame;
+    MSG    msg;
+
+    msg= composeMSTR ("Edmonton", "Red Deer", "Calgary");
+    sendFrame (fifoCS, STR, &amp;msg);
+    frame= rcvFrame(fifoSC);  printFrame("received ", &amp;frame);
+
+    msg= composeMINT (10, 20, 30);
+    sendFrame (fifoCS, INT, &amp;msg);
+    frame= rcvFrame(fifoSC);  printFrame("received ", &amp;frame);
+
+    msg= composeMFLOAT (10.25, 20.50, 30.75);
+    sendFrame (fifoCS, FLOAT, &amp;msg);
+    frame= rcvFrame(fifoSC);  printFrame("received ", &amp;frame);
+
+    msg= composeMINT(0,0,0);
+    sendFrame (fifoCS, DONE, &amp;msg);
+}
+       </font></strong></pre>
+
+</li><li>  In the above code, note the line <b>msg= composeMINT(0,0,0)</b>
+      where we use one of the compose functions to <b>(partially)</b> clear
+      a <b>msg</b> union.
+</li></ul>       
+
+<!--  --------------------------------------------- -->
+<h3>9. The Server Loop</h3>
+<ul>
+<li>  A matching server to the above client, may be implemented as follows:
+      <pre>      <strong>
+      <font color="blue">
+void do_server (int fifoCS, int fifoSC)
+{
+    MSG    msg;
+    FRAME  frame;
+
+    while(1) {
+       frame= rcvFrame(fifoCS);    	     
+       printFrame ("received ", &amp;frame);
+       if (frame.kind == DONE) {printf ("Done\n"); return;}       
+
+       sendFrame(fifoSC, ACK, &amp;msg);       
+    }
+}
+      </font></strong></pre>
+</li></ul>       
+
+<!--  --------------------------------------------- -->
+<h3>10. Function Main </h3>
+<ul>
+<li>  The main function executes either the server code, or the client
+      code depending on the command line arguments.
+      Two FIFOs are used for client to server, and server to client
+      communications.
+      <pre>      <strong>
+      <font color="blue">
+int main (int argc, char *argv[])
+{
+    int fifoCS, fifoSC;
+    
+    if (argc != 2) { printf("Usage: %s [-c|-s]\n", argv[0]); exit(0); }
+
+    if ( (fifoCS= open("fifo-cs", O_RDWR)) &lt; 0)
+        FATAL ("%s: open '%s' failed \n", argv[0], "fifo-cs");
+
+    if ( (fifoSC= open("fifo-sc", O_RDWR)) &lt; 0)
+        FATAL ("%s: open '%s' failed \n", argv[0], "fifo-sc");
+    
+    if ( strstr(argv[1], "-c") != NULL) do_client(fifoCS, fifoSC);
+    if ( strstr(argv[1], "-s") != NULL) do_server(fifoCS, fifoSC);
+
+    close(fifoCS); close(fifoSC);
+}
+       </font></strong></pre>
+</li></ul>       
+
+
+<!--  --------------------------------------------- -->
+<h3>11. Suggested Activity</h3>
+<ul>
+<li>  To test the above ideas use <b>mkfifo</b> to create two FIFOs:
+      <b>fifo-cs</b>, and <b>fifo-sc</b> in a fresh directory.
+      <br><br>
+
+</li><li>  Assemble the above fragments in a program called, e.g.
+      <b>fifoMsg.c</b>. Compile the program.
+      <br><br>
+
+</li><li>  Open two terminal windows.
+      Use one window to run the server using <b>fifoMsg -s</b>, and
+      the other window to run the client using <b>fifoMsg -c</b>.
+      <br><br>      
+
+</li><li>  Extend your program by adding an array, say
+      <b>int  pktStats[MSG_KINDS]</b>,
+      to keep track of sent and received messages of each type.
+      <br><br>      
+
+</li><li>  You may also like to experiment with replacing low level I/O calls
+      (e.g., open, read, write, close) with stream I/O functions
+      (fopen, fread, fwrite, fclose, etc.).
+
+</li></ul>
+<!--  --------------------------------------------- -->
+<h3> 12. Acknowledgment</h3>
+<ul>
+<li>  If you find the above ideas useful, please mention this aspect
+in your Assignment #2 report.
+</li></ul>
+
+<!--  --------------------------------------------- -->
+<hr align="left" width="50%">
+<h4>CMPUT 379: U. of Alberta, Author: E. Elmallah</h4>	
+
+</div>
+
+
+</body></html>
