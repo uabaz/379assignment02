@@ -96,7 +96,7 @@ int clientRequestID(int fdC, int fdS);
 void *testObject(void *args);
 int Tokenizer(char inputStr[], char tokens[][MAXWORD], char seps[], char* pointerArray[]);
 
-typedef enum KIND {get, put, delete, gtime, delay, reqid, ack, done, quit} KIND;
+typedef enum KIND {get, put, delete, gtime, delay, reqid, ack, done, quit, invalid} KIND;
 
 typedef struct intMsg {
     int clientID;
@@ -116,9 +116,16 @@ typedef struct sObject {
     strMsg package;
 } sObject;
 
-typedef union {intMsg mInt; strMsg mStr; sObject mObj;} DATA;
+typedef union {intMsg mInt; strMsg mStr; sObject mObj;} PACKAGE;
+
+typedef struct DATA {
+    int TYPE;
+    PACKAGE package;
+} DATA;
+
 typedef struct {KIND kind; DATA data;} FRAME;
-char commandList[][MAXWORD] = {"get", "put", "delete", "gtime", "delay", "reqid", "ack", "done", "quit"};
+
+char commandList[][MAXWORD] = {"get", "put", "delete", "gtime", "delay", "reqid", "ack", "done", "quit", "invalid"};
 
 
 
@@ -130,6 +137,7 @@ void printObjectPacket(sObject obj);
 FRAME receiveFrame(int fileDesc);
 void sendFrame(int fileDesc, KIND kind, DATA *data);
 KIND getFrameKind(char command[]);
+int serverACK(int clientFD, KIND frameKind, int dataType);
 
 //
 //main function
@@ -189,25 +197,35 @@ int main(int argc, char* argv[]){
         nfds_t cliFDNum = 3;
         cliFDs[0].fd = cliFD;
         cliFDs[0].events = POLLIN; //does client fifo have any data inside?
-        int ttl = 1000;
+        int ttl = 3000;
 
         while (!hasQuit){
+            //reset poll structs.
+            for (int i = 0; i < servFDNum; i++){
+                servFDs[i].events = POLLOUT;
+                servFDs[i].revents = 0;
+            }
+            for (int i = 0; i < cliFDNum; i++){
+                cliFDs[i].events = POLLIN;
+                cliFDs[i].revents = 0;
+            }
 
             //repeatedly poll the server fifo for readiness;
-            printf("Polling server fds for %d.%d sec.\n", ttl/1000, ttl%1000);
+            printf("Polling server write fd for %d.%d sec.\n", ttl/1000, ttl%1000);
             int sretval = 0;
             sretval = poll(servFDs, servFDNum, ttl);
 
             if(sretval > 0){
                 for (int i = 0; i < servFDNum; i++){
-                    printf("%d\n", servFDs[i].revents);
+                    printf("server fd %d with event %d\n", servFDs[i].fd, servFDs[i].revents);
+                    //got some data, which fds have things?
                 }
             }
             else if (sretval < 0){
                 printf("server poll Error: %s.\n", strerror(errno));
             }
 
-            //poll with a timeout of 2.5 sec on all client fifos for data;
+            //poll with a timeout on all client fifos for data;
             printf("Polling client fds for %d.%d sec.\n", ttl/1000, ttl%1000);
             int cretval = 0;
             cretval = 0;
@@ -216,16 +234,49 @@ int main(int argc, char* argv[]){
             if(cretval > 0){
                 //got some data, which fds have things?
                 for (int i = 0; i < cliFDNum; i++){
-                    if (cliFDs[i].revents != 0){
-                        //this fd has some data; read it.
-                        int nread = 0;
-                        FRAME newFrame;
-                        newFrame = receiveFrame(cliFDs[i].fd);
+                    if (cliFDs[i].fd != 0){
+                        printf("fd %d with event %d\n", cliFDs[i].fd, cliFDs[i].revents);
+                        //got some data, which fds have things?
+                        if (cliFDs[i].revents == 16){
+                            close(cliFDs[i].fd);
+                            open(fifoCtoS, O_NONBLOCK, O_RDONLY);
+                            break;
+                        }
+                        if (cliFDs[i].revents != 0){
+                            //this fd has some data;
+
+                            FRAME newFrame;
+                            newFrame = receiveFrame(cliFDs[i].fd);
+                            printFrame("client frame rec:", &newFrame);
+                            //get clientid;
+                            int sendingClient = -1;
+                            int responseFD = -1;
+                            switch(newFrame.data.TYPE){
+                                case(0):        //packedIntData
+                                    sendingClient = newFrame.data.package.mInt.clientID;
+                                    responseFD = cliFDs[sendingClient].fd;
+                                    break;
+                                case(1):        //packedStrData
+                                    printf("String data package sent.\n");
+                                    break;
+                                case(2):        //packedObjData
+                                    sendingClient = newFrame.data.package.mInt.clientID;
+                                    responseFD = cliFDs[sendingClient].fd;
+                                    break;
+                            }
+                        //send ack:
+                        serverACK(responseFD, newFrame.kind, newFrame.data.TYPE);
+                        }
                     }
                 }
             }
-            else if ( cretval < 0){
-                printf("client poll Error: %s.\n", strerror(errno));
+
+            else if (cretval == 0){
+                printf("server poll : no fd with input data.\n");
+            }
+
+            else if (cretval < 0){
+                printf("client poll : %s.\n", strerror(errno));
             }
 		
         }
@@ -307,27 +358,27 @@ int main(int argc, char* argv[]){
                         FRAME thisFrame;
                             memset(&thisFrame, 0, sizeof(thisFrame));
                         
-                        DATA package;
-                            memset(&package, 0, sizeof(package));
+                        DATA payload;
+                            memset(&payload, 0, sizeof(payload));
 
                         switch (checkType)
                         {
                         case put:
                             thisFrame.kind = put;
                             //grab the next few lines as a block to pack up;
-                            thisFrame.data = packData(workclientID, objectName, package.mStr);
+                            thisFrame.data = packData(workclientID, objectName, payload.package.mStr);
                             break;
                         case get:
                             thisFrame.kind = get;
-                            thisFrame.data = packData(workclientID, objectName, package.mStr);
+                            thisFrame.data = packData(workclientID, objectName, payload.package.mStr);
                             break;
                         case delete:
                             thisFrame.kind = delete;
-                            thisFrame.data = packData(workclientID, objectName, package.mStr);
+                            thisFrame.data = packData(workclientID, objectName, payload.package.mStr);
                             break;
                         case gtime:
                             thisFrame.kind = gtime;
-                            thisFrame.data = packData(workclientID, objectName, package.mStr);
+                            thisFrame.data = packData(workclientID, objectName, payload.package.mStr);
                             break;
                         case delay:
                             thisFrame.kind = delay;
@@ -359,8 +410,6 @@ int main(int argc, char* argv[]){
                         }
 
                         //got the nice juicy data; need to package it.
-                        DATA dataBlock = packStrM(structDataArray[0], structDataArray[1], structDataArray[2]);
-                        DATA thisData = packData(workclientID, objectName, dataBlock.mStr);
                         //do stuff with thisData
                         //sendDataPacket();
                         //reinitialize for next block
@@ -495,7 +544,8 @@ KIND getFrameKind(char *whatKind){
         {reqid, "reqid"},
         {ack, "ack"},
         {done, "done"},
-        {quit, "quit"},         //...8
+        {quit, "quit"},
+        {invalid, "invalid"},         //...9
     };
 
     KIND result = -1;
@@ -525,14 +575,15 @@ KIND getFrameKind(char *whatKind){
 */
 DATA packIntM(int clientID, KIND kind, int argument){
 
-    DATA package;
-    memset(&package, 0, sizeof(DATA));
+    DATA mINT;
+    memset(&mINT, 0, sizeof(DATA));
 
-    package.mInt.clientID = clientID;
-    package.mInt.kind = kind;
-    package.mInt.argument = argument;
+    mINT.TYPE = 0;
+    mINT.package.mInt.clientID = clientID;
+    mINT.package.mInt.kind = kind;
+    mINT.package.mInt.argument = argument;
 
-    return package;
+    return mINT;
 }
 
 /**
@@ -544,14 +595,15 @@ DATA packIntM(int clientID, KIND kind, int argument){
 */
 DATA packStrM(const char *line1, const char *line2, const char *line3){
 
-    DATA package;
-    memset(&package, 0, sizeof(DATA));
+    DATA mSTR;
+    memset(&mSTR, 0, sizeof(DATA));
 
-    strncpy(package.mStr.data1, line1, MAXLINELENGTH);
-    strncpy(package.mStr.data2, line2, MAXLINELENGTH);
-    strncpy(package.mStr.data3, line3, MAXLINELENGTH);
+    mSTR.TYPE = 1;
+    strncpy(mSTR.package.mStr.data1, line1, MAXLINELENGTH);
+    strncpy(mSTR.package.mStr.data2, line2, MAXLINELENGTH);
+    strncpy(mSTR.package.mStr.data3, line3, MAXLINELENGTH);
 
-    return package;
+    return mSTR;
 }
 /**
  * packData:
@@ -566,14 +618,15 @@ DATA packStrM(const char *line1, const char *line2, const char *line3){
  * 
 */
 DATA packData(int ID, char name[], strMsg package){
-    DATA object;
-    memset(&object, 0, sizeof(DATA));
+    DATA mOBJ;
+    memset(&mOBJ, 0, sizeof(DATA));
 
-    object.mObj.owner = ID;
-    strncpy(object.mObj.name, name, MAXWORD);
-    object.mObj.package = package;
+    mOBJ.TYPE = 2;
+    mOBJ.package.mObj.owner = ID;
+    strncpy(mOBJ.package.mObj.name, name, MAXWORD);
+    mOBJ.package.mObj.package = package;
 
-    return object;
+    return mOBJ;
 }
 
 /**
@@ -592,38 +645,43 @@ void printFrame(const char *userPrefix, FRAME *frame){
     switch (frame->kind)
     {
     case get:
-        printf("[%d, %s]", data.mObj.owner, data.mObj.name);
+        printf("[%d, %s]", data.package.mObj.owner, data.package.mObj.name);
         break;
     
     case put:
-        printf("[%d, %s]", data.mObj.owner, data.mObj.name);
+        printf("[%d, %s]", data.package.mObj.owner, data.package.mObj.name);
         break;
     
     case delete:
-        printf("[%d, %s]", data.mObj.owner, data.mObj.name);
+        printf("[%d, %s]", data.package.mObj.owner, data.package.mObj.name);
         break;
     
     case gtime:
-        printf("[%d]", data.mInt.clientID);
+        printf("[%d]", data.package.mInt.clientID);
         break;
     
     case delay:
-        printf("[%d, %d]", data.mInt.clientID, data.mInt.argument);
+        printf("[%d, %d]", data.package.mInt.clientID, data.package.mInt.kind);
         break;
     
     case reqid:
-        printf("[%d, %d]", data.mInt.clientID, data.mInt.argument);
+        printf("[%d, %d]", data.package.mInt.clientID, data.package.mInt.argument);
         break;
     
     case ack:
+        printf("Got ACK for frame: [%d, [%d]", data.package.mInt.clientID, data.package.mInt.kind);
         break;
     
     case done:
-        printf("%d", data.mInt.clientID);
+        printf("%d", data.package.mInt.clientID);
         break;
     
     case quit:
-        printf("%d", data.mInt.clientID);
+        printf("%d", data.package.mInt.clientID);
+        break;
+
+    case invalid:
+        printf("Invalid FRAME; did you send strings or other data type?\n");
         break;
 
     default:
@@ -666,6 +724,10 @@ FRAME receiveFrame (int fd) {
     frmLen = read(fd, (char *) &recFrame, sizeof(recFrame));
     if (frmLen != sizeof(recFrame)){
         printf("Received frame has len: [%d] but expected len: [%lu].\n", frmLen, sizeof(recFrame));
+        FRAME nullFrame;
+        memset(&nullFrame, 0, sizeof(nullFrame));
+        nullFrame.kind = invalid;
+        return nullFrame;
     }
     return recFrame;
 }
@@ -690,4 +752,22 @@ int clientRequestID(int fifoC, int fifoS){
     sendFrame(fifoS, reqid, &reqID);
 
     return clientID;
+}
+
+/**
+ * serverACK
+ * 
+ * Send simple ack msg across a FIFO for printing on the other side.
+ * int clientFD: fifo to sent msg
+ * KIND frameKind: msg type recv'd
+ * int dataType: type of data package in the frame client had sent
+ * 
+ * returns -1 if error, otherwise returns clientFD
+*/
+int serverACK(int clientFD, KIND frameKind, int dataType){
+    FRAME ackF;
+    memset(&ackF, 0, sizeof(ack));
+    ackF.kind = ack;
+    ackF.data = packIntM(clientFD, ack, dataType);
+    write(clientFD, &ackF, sizeof(FRAME));
 }
