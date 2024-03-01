@@ -16,7 +16,7 @@
 
 int main (int argc, char* argv[]){
 
-	int fd = open("./fifo-1-0", O_WRONLY);
+	int fd = open("./fifo-1-0", O_RDWR);
 	if (fd < 0){
 		printf("Error could not open file.\n");
 	}
@@ -94,6 +94,23 @@ PKG_3:\t%d\n", myFrame.KIND, myFrame.data.TYPE, myFrame.data.package.iData.a, my
 	}
 
 	close(fd);
+
+	int servFD = open("./fifo-0-1", O_RDWR);
+	printf("Opened server fd %d for reading\n", servFD);
+	struct FRAME getFrame;
+	memset(&getFrame, 0, sizeof(struct FRAME));
+	int nread = read(servFD, &getFrame, sizeof(struct FRAME));
+	if (nread == -1){
+		printf("Error: could not read %d (%d)\n.", servFD, nread);
+	}
+	printf("Got a frame!\n\
+	%d\n\
+	%d\n\
+	%d\n\
+	%d\n\
+	%d\n\
+	", getFrame.KIND, getFrame.data.TYPE, getFrame.data.package.iData.a, getFrame.data.package.iData.b, getFrame.data.package.iData.c);
+	close(servFD);
 
 	return 0;
 }
