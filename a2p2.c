@@ -149,6 +149,8 @@ int main(int argc, char* argv[]){
     // ====================================================================================================
     if ((strcmp(userFlag, serverFlag) == 0)){
 
+        #define STAG "*[S]: "
+
         //setup a timer since server start.
         time_t startTime = time(NULL);
 
@@ -163,13 +165,13 @@ int main(int argc, char* argv[]){
         //open FIFO pipes:
         int cliFD = open(fifoCtoS, O_RDWR);     //client pipe in non-blocking mode
         if (cliFD == -1){
-            printf("*[S]: Error opening [%s]: %s.\n", fifoCtoS, strerror(errno));
-        } else printf("*[S]: open c|s fifo %s, %d\n", fifoCtoS, cliFD);
+            printf(STAG "Error opening [%s]: %s.\n", fifoCtoS, strerror(errno));
+        } else printf(STAG "open c|s fifo %s, %d\n", fifoCtoS, cliFD);
 
         int servFD = open(fifoStoC, O_RDWR);    //server pipe in non-blocking mode
         if (servFD < 0){
-            printf("*[S]; Error opening [%s]: %s.\n", fifoStoC, strerror(errno));
-        } else printf("*[S]: open s|c fifo %s, %d\n", fifoStoC, servFD);
+            printf(STAG "Error opening [%s]: %s.\n", fifoStoC, strerror(errno));
+        } else printf(STAG "open s|c fifo %s, %d\n", fifoStoC, servFD);
 
 
 		//manage clients (for a2p3);
@@ -213,7 +215,7 @@ int main(int argc, char* argv[]){
                 //got some data, which fds have things?
                 for (int i = 0; i < cliFDNum; i++){
                     if (cliFDs[i].revents != 0){
-                        printf("*[S]: fd %d with event %d.\n", cliFDs[i].fd, cliFDs[i].revents);
+                        printf(STAG "fd %d with event %d.\n", cliFDs[i].fd, cliFDs[i].revents);
                         //writer has POLLHUP; reopen the fd.
                         //stops repeated data reads on fd's that keep reporting POLLHUP???
                         if (cliFDs[i].revents == 16){
@@ -224,28 +226,12 @@ int main(int argc, char* argv[]){
 
                         FRAME newFrame = initFrame();
                         newFrame = receiveFrame(cliFDs[i].fd);
-                        printFrame("*[S]: got client data from fd", &newFrame);
-
-                        //for a2p3;
-                        //get sendingclientid; ids are packed. may not need this.
-                        int sendingClient = -1;
-
-                        switch(newFrame.data.TYPE){
-                            case(0):        //packedIntData
-                                sendingClient = newFrame.data.package.mInt.clientID-1;
-                                break;
-                            case(1):        //packedStrData
-                                printf("String data package sent.\n");
-                                break;
-                            case(2):        //packedObjData
-                                sendingClient = newFrame.data.package.mInt.clientID-1;
-                                break;
-                        }
+                        printFrame(STAG "got client data from fd", &newFrame);
 
                         //send ack:
                         DATA ackData;
                         memset(&ackData, 0, sizeof(DATA));
-                        ackData = packIntM(sendingClient, newFrame.kind, 0);
+                        ackData = packIntM(newFrame.data.TYPE, newFrame.kind, 0);
                         serverACK(servFD, newFrame.kind, 0);
 
                         //process client req's:
@@ -269,15 +255,17 @@ int main(int argc, char* argv[]){
                                 
                                 //check if table is full.
                                 if(objectTableCapacity < NOBJECT){
+                                    //table has space, check for entries
                                     for(int j = 0; j < NOBJECT; j++){
-                                        if (objectTable[j].name == cliObj.name){
-                                            printf("*[S]: PUT error: item already exists. [%s]\n", cliObj.name);
+                                        if (strncmp(objectTable[j].name, cliObj.name, sizeof(objectTable[j].name)) == 0){
+                                            printf(STAG "PUT error: item already exists. [%s]\n", cliObj.name);
                                             break;
                                         }
+                                        //didn't find anything;
                                     }
                                 }
                                 else{
-                                    printf("*[S]: PUT error: server table capacity maxed [%d].\n", NOBJECT);
+                                    printf(STAG "PUT error: server table capacity maxed [%d].\n", NOBJECT);
                                     break;
                                 }
 
@@ -289,15 +277,11 @@ int main(int argc, char* argv[]){
                                 for(int k = 0; k < NOBJECT; k++){
                                     if (memcmp(&emptyObj, &objectTable[k], sizeof(sObject)) == 0){
                                         index = k;
-                                        break;
-                                    }
-                                }
-                                
-                                // all good, copy data:
-                                memcpy(&objectTable[index], &cliObj, sizeof(sObject));
-                                objectTableCapacity +=1;
+                                        // all good, copy data:
+                                        objectTable[index] = cliObj;
+                                        objectTableCapacity +=1;
 
-                                printf("*[S]: PUT at loc [%d]:\n\
+                                        printf(STAG "PUT at loc [%d]:\n\
 NAME: \t[%s]\n\
 OWNR: \t[%d]\n\
 LOAD: [%s], [%s], [%s]\n",
@@ -307,6 +291,11 @@ LOAD: [%s], [%s], [%s]\n",
                                 &objectTable[index].package.data1,
                                 &objectTable[index].package.data2,
                                 &objectTable[index].package.data3);
+                                        break;
+                                    }
+                                
+                                }
+                                
 
                                 break;
 
@@ -317,14 +306,14 @@ LOAD: [%s], [%s], [%s]\n",
                                 cliObj = newFrame.data.package.mObj;
                                 for (int g = 0; g < objectTableCapacity; g++){
                                     //search for named obj in table:
-                                    if ((char*) &objectTable[g].name == (char*) cliObj.name){ 
+                                    if (strncmp(objectTable[g].name, cliObj.name, sizeof(objectTable[g].name)) == 0){ 
                                         DATA foundData = packData(cliObj.owner, cliObj.name, cliObj.package);
                                         sendFrame(servFD, get, &foundData);
                                         break;
                                     }
                                 }
-
-                                printf("*[S]: GET error: object [%s] not found in server table.\n", cliObj.name);
+                                //didn't find obj in table;
+                                printf(STAG "GET error: object [%s] not found in server table.\n", cliObj.name);
                                 break;
 
                             //
@@ -333,13 +322,14 @@ LOAD: [%s], [%s], [%s]\n",
                             case (delete):;
                                 cliObj = newFrame.data.package.mObj;
                                 for (int d = 0; d < objectTableCapacity; d++){
-                                    if ((char*) &objectTable[d].name == (char*) cliObj.name){
-                                        printf("*[S]: deleting [%d]:[%s] from table; this is final!\n", d, cliObj.name);
+                                    if (strncmp(objectTable[d].name, cliObj.name, sizeof(objectTable[d].name)) == 0){
+                                        printf(STAG "deleting [%d]:[%s] from table; this is final!\n", d, cliObj.name);
                                         memset(&objectTable[d], 0, sizeof(sObject));
                                         objectTableCapacity -=1;
                                     }
                                 }
-                                printf("*[S]: DELETE error: [%s] not found in table. Could not delete.\n", cliObj.name);
+                                //didn't find obj in table;
+                                printf(STAG "DELETE error: [%s] not found in table. Could not delete.\n", cliObj.name);
                                 break;
 
                             //
@@ -352,7 +342,7 @@ LOAD: [%s], [%s], [%s]\n",
                                 time_t elapsed = currTime - startTime;
                                 timeData = packIntM(0, 0, elapsed);
                                 sendFrame(servFD, stime, &timeData);
-                                printf("*[S]: send elapsed time [%d sec.]\n", elapsed);
+                                printf(STAG "send elapsed time [%d sec.]\n", elapsed);
                                 break;
                             
                             //
@@ -366,7 +356,7 @@ LOAD: [%s], [%s], [%s]\n",
                             // QUIT
                             //
                             case (quit):;
-                                printf("*[S]: client quit [id %d]!", sendingClient);
+                                printf(STAG "client quit!");
                                 break;
 
                             default:
@@ -399,7 +389,7 @@ LOAD: [%s], [%s], [%s]\n",
         int servFD = open(fifoStoC, O_RDWR);    //read from server pipe
             if (servFD < 0){
                 printf(CTAG "open s|c fd [%s] failed.\n", fifoStoC);
-            } else printf(CTAG "open fd [%d]\n", servFD);
+            } else printf(CTAG "open s|c fd [%d]\n", servFD);
 
         //run in client mode; open an instructions file
         FILE *clientData = fopen(argv[2], "r");
@@ -469,7 +459,7 @@ LOAD: [%s], [%s], [%s]\n",
 
                                 if ((nread=getline(&currLine, &len, clientData)) > 0){
                                     if (currLine[0] != '{'){
-                                        printf(CTAG "PUT: bad data block (did you include a '{' marker?).\n");
+                                        printf(CTAG "PUT: bad data block (does file include a '{' marker after put command?).\n");
                                         break;
                                     }
                                 }
@@ -725,7 +715,8 @@ DATA packStrM(const char *line1, const char *line2, const char *line3){
  * 
  * Takes up to three data lines and packages them into a struct.
  * 
- * Returns a DATA struct. Used to store data blocks in the server's ObjectTable.
+ * Returns a DATA struct. Used to manipulate the server object table which
+ * requires a DATA type of mObj and some ownership data.
  * 
  * int ID = client id (aka 'owner');
  * char[] name = string specifying a unique object (aka 'key');
@@ -784,7 +775,7 @@ void printFrame(const char *userPrefix, FRAME *frame){
         break;
     
     case ack:
-        printf("[client[%d], framekind[%d]]", data.package.mInt.clientID, data.package.mInt.kind);
+        printf("[packagetype[%d], framekind[%d]]", data.package.mInt.clientID, data.package.mInt.kind);
         break;
     
     case done:
