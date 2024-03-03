@@ -4,15 +4,15 @@
 
 ###Assignment 2 Part 1
 a2p1: a2p1.c
-	gcc -Wall -std=c99 -pthread ./a2p1.c -o a2p1
+	gcc -Wall ./a2p1.c -o a2p1
 
 #a2p1r: create a2p1 executable and run with preset settings:
 a2p1r: a2p1.c
-	gcc -Wall -std=c99 -pthread ./a2p1.c -o a2p1 && ./a2p1 10 myFile 5432
+	gcc -Wall ./a2p1.c -o a2p1 && ./a2p1 10 myFile 5432
 
 #a2p1db: create gdb debug executable
 a2p1db: a2p1.c
-	gcc -Wall -std=c99 -pthread -ggdb ./a2p1.c -o a2p1db
+	gcc -Wall -ggdb ./a2p1.c -o a2p1db
 
 ###Assignment 2 Part 2
 fifos:
@@ -38,3 +38,12 @@ a2p2cdb: a2p2.c
 #clean: remove debug executables
 clean:
 	rm ./a2p1db ./a2p2db
+
+#a2p3:
+a2p3:
+	echo "CANNOT CREATE a2p3: Ran out of time for project ccid azwarich"
+
+#make tar for submission
+tar:
+	tar -cvf zwarich-a2.tar ./Makefile ./a2p1.c ./a2p2.c ./myFile ./x1.dat
+
